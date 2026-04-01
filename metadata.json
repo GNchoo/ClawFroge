@@ -1,0 +1,5 @@
+{
+  "name": "ClawForge",
+  "description": "A high-performance autonomous AI coding assistant inspired by Claude Code, featuring a web-based harness and multi-model support.",
+  "requestFramePermissions": []
+}
