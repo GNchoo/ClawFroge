@@ -117,81 +117,92 @@ export default function App() {
     }
   };
 
+  const executeToolCall = async (call: { name: string; args: Record<string, unknown> }) => {
+    addTerminalLine(`[TOOL] Calling ${call.name} with ${JSON.stringify(call.args)}`);
+    if (call.name === "list_files") {
+      const res = await fetch("/api/files");
+      return await res.json();
+    } else if (call.name === "read_file") {
+      const res = await fetch(`/api/file?path=${encodeURIComponent(call.args.path as string)}`);
+      return await res.json();
+    } else if (call.name === "write_file") {
+      const res = await fetch("/api/file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(call.args),
+      });
+      const result = await res.json();
+      if (!res.ok || result.error) {
+        addTerminalLine(`[ERROR] Failed to write ${call.args.path}: ${result.error || res.statusText}`);
+      } else {
+        addTerminalLine(`[FILE] Written to ${call.args.path}`);
+      }
+      return result;
+    } else if (call.name === "search_code") {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(call.args.query as string)}`);
+      return await res.json();
+    }
+    return { error: "Unknown tool" };
+  };
+
   const handleGemini = async (content: string) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    
+    const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+
     const tools = [
       { functionDeclarations: [listFilesTool, readFileTool, writeFileTool, searchCodeTool] }
     ];
 
-    let currentMessages = [...messages, { role: "user", parts: [{ text: content }] }];
-    
-    const response = await ai.models.generateContent({
+    // Build history: filter out system messages, map "assistant" → "model"
+    const history = messages
+      .filter(m => m.role === "user" || m.role === "assistant")
+      .map(m => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
+
+    const chat = ai.chats.create({
       model: settings.model,
-      contents: [
-        { role: "system", parts: [{ text: settings.systemPrompt }] },
-        ...currentMessages.map(m => ({ role: m.role, parts: [{ text: (m as Message).content || (m as any).parts?.[0]?.text || "" }] }))
-      ],
-      config: { tools },
+      config: {
+        tools,
+        systemInstruction: settings.systemPrompt,
+      },
+      history,
     });
 
-    const assistantMsg = response.candidates?.[0]?.content;
-    if (!assistantMsg) return;
+    // Agentic loop: keep processing tool calls until we get a final text response
+    let response = await chat.sendMessage({ message: content });
+    const MAX_ITERATIONS = 10;
 
-    // Handle Function Calls
-    if (response.functionCalls) {
-      for (const call of response.functionCalls) {
-        addTerminalLine(`[TOOL] Calling ${call.name} with ${JSON.stringify(call.args)}`);
-        let result;
-        
-        if (call.name === "list_files") {
-          const res = await fetch("/api/files");
-          result = await res.json();
-        } else if (call.name === "read_file") {
-          const res = await fetch(`/api/file?path=${encodeURIComponent(call.args.path as string)}`);
-          result = await res.json();
-        } else if (call.name === "write_file") {
-          const res = await fetch("/api/file", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(call.args),
-          });
-          result = await res.json();
-          addTerminalLine(`[FILE] Written to ${call.args.path}`);
-        } else if (call.name === "search_code") {
-          const res = await fetch(`/api/search?q=${encodeURIComponent(call.args.query as string)}`);
-          result = await res.json();
-        }
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      const calls = response.functionCalls;
+      if (!calls || calls.length === 0) break;
 
-        // Send tool response back to Gemini
-        const toolResponse = await ai.models.generateContent({
-          model: settings.model,
-          contents: [
-            { role: "system", parts: [{ text: settings.systemPrompt }] },
-            ...currentMessages.map(m => ({ role: m.role, parts: [{ text: (m as Message).content || (m as any).parts?.[0]?.text || "" }] })),
-            assistantMsg,
-            {
-              role: "user", // In @google/genai, tool responses are often sent as a follow-up user turn or handled via chat sessions
-              parts: [{ text: `Tool ${call.name} returned: ${JSON.stringify(result)}` }]
-            }
-          ],
-        });
+      addTerminalLine(`[AI] Chain of thought continues with ${calls.length} tool(s)...`);
 
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          role: "assistant",
-          content: toolResponse.text || "Action completed.",
-          timestamp: Date.now()
-        }]);
-      }
-    } else {
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        role: "assistant",
-        content: response.text || "No response.",
-        timestamp: Date.now()
-      }]);
+      // Execute all tool calls in this round, then send all results back at once
+      const functionResponses = await Promise.all(
+        calls.map(async (call) => {
+          const result = await executeToolCall(call as { name: string; args: Record<string, unknown> });
+          return {
+            functionResponse: {
+              name: call.name,
+              response: { output: result },
+            },
+          };
+        })
+      );
+
+      response = await chat.sendMessage({ message: functionResponses });
     }
+
+    // Display final text response
+    const finalText = response.text;
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: "assistant",
+      content: finalText || "Action completed.",
+      timestamp: Date.now(),
+    }]);
   };
 
   const handleLocalLlm = async (content: string) => {

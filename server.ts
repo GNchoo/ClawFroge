@@ -13,17 +13,38 @@ import OpenAI from "openai";
 
 const execAsync = promisify(exec);
 
+let currentRoot = process.cwd();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json());
 
+  // API: Get current workspace root
+  app.get("/api/workspace", (req, res) => {
+    res.json({ root: currentRoot });
+  });
+
+  // API: Set workspace root
+  app.post("/api/workspace", async (req, res) => {
+    const { root } = req.body;
+    if (!root) return res.status(400).json({ error: "root path required" });
+    try {
+      await fs.access(root);
+      const stat = await fs.stat(root);
+      if (!stat.isDirectory()) return res.status(400).json({ error: "Path is not a directory" });
+      currentRoot = path.resolve(root);
+      res.json({ success: true, root: currentRoot });
+    } catch (error) {
+      res.status(400).json({ error: "Directory does not exist or is not accessible" });
+    }
+  });
+
   // API: List files in the project
   app.get("/api/files", async (req, res) => {
     try {
-      const root = process.cwd();
-      const files = await getFiles(root);
+      const files = await getFiles(currentRoot);
       res.json(files);
     } catch (error) {
       res.status(500).json({ error: "Failed to list files" });
@@ -35,8 +56,8 @@ async function startServer() {
     const filePath = req.query.path as string;
     if (!filePath) return res.status(400).json({ error: "Path required" });
     try {
-      const absolutePath = path.resolve(process.cwd(), filePath);
-      if (!absolutePath.startsWith(process.cwd())) {
+      const absolutePath = path.resolve(currentRoot, filePath);
+      if (!absolutePath.startsWith(currentRoot)) {
         return res.status(403).json({ error: "Access denied" });
       }
       const content = await fs.readFile(absolutePath, "utf-8");
@@ -51,16 +72,16 @@ async function startServer() {
     const { path: filePath, content } = req.body;
     if (!filePath || content === undefined) return res.status(400).json({ error: "Path and content required" });
     try {
-      const absolutePath = path.resolve(process.cwd(), filePath);
-      if (!absolutePath.startsWith(process.cwd())) {
+      const absolutePath = path.resolve(currentRoot, filePath);
+      if (!absolutePath.startsWith(currentRoot)) {
         return res.status(403).json({ error: "Access denied" });
       }
       // Ensure directory exists
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
       await fs.writeFile(absolutePath, content, "utf-8");
       res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to write file" });
+    } catch (error: any) {
+      res.status(500).json({ error: "Failed to write file", details: error.message });
     }
   });
 
@@ -70,7 +91,7 @@ async function startServer() {
     if (!query) return res.status(400).json({ error: "Query required" });
     try {
       // Simple grep implementation
-      const { stdout } = await execAsync(`grep -rIn "${query.replace(/"/g, '\\"')}" . --exclude-dir={node_modules,.git,dist}`);
+      const { stdout } = await execAsync(`grep -rIn "${query.replace(/"/g, '\\"')}" . --exclude-dir={node_modules,.git,dist}`, { cwd: currentRoot });
       res.json({ results: stdout });
     } catch (error: any) {
       // grep returns 1 if no matches found

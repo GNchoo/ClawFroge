@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Folder, File, ChevronRight, ChevronDown, Settings, Cpu, Globe, Download, Loader2 } from "lucide-react";
+import { Folder, File, ChevronRight, ChevronDown, Settings, Cpu, Globe, Download, Loader2, FolderOpen, Check, X } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { FileNode, AppSettings } from "@/src/types";
 
@@ -17,18 +17,56 @@ export default function Sidebar({ onFileSelect, settings, setSettings }: Sidebar
   const [pullStatus, setPullStatus] = useState("");
   const [ollamaModels, setOllamaModels] = useState<any[]>([]);
   const [pullModelName, setPullModelName] = useState("");
+  const [workspaceRoot, setWorkspaceRoot] = useState("");
+  const [workspaceInput, setWorkspaceInput] = useState("");
+  const [showWorkspaceInput, setShowWorkspaceInput] = useState(false);
+  const [workspaceStatus, setWorkspaceStatus] = useState("");
 
   const POPULAR_MODELS = [
     "llama4", "llama3.3", "mistral-large-2", "phi-4", "gemma-3", 
     "deepseek-v3", "deepseek-coder-v2.5", "qwen3.5", "qwen3", "codestral-v2"
   ];
 
-  useEffect(() => {
+  const refreshFiles = () => {
     fetch("/api/files")
       .then((res) => res.json())
       .then(setFiles)
       .catch(console.error);
+  };
+
+  useEffect(() => {
+    fetch("/api/workspace")
+      .then((res) => res.json())
+      .then((data) => setWorkspaceRoot(data.root || ""))
+      .catch(console.error);
+    refreshFiles();
   }, []);
+
+  const handleSetWorkspace = async () => {
+    if (!workspaceInput.trim()) return;
+    setWorkspaceStatus("Setting...");
+    try {
+      const res = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root: workspaceInput.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setWorkspaceRoot(data.root);
+        setWorkspaceInput("");
+        setShowWorkspaceInput(false);
+        setWorkspaceStatus("");
+        refreshFiles();
+      } else {
+        setWorkspaceStatus(`Error: ${data.error}`);
+        setTimeout(() => setWorkspaceStatus(""), 3000);
+      }
+    } catch {
+      setWorkspaceStatus("Connection failed");
+      setTimeout(() => setWorkspaceStatus(""), 3000);
+    }
+  };
 
   useEffect(() => {
     if (settings.provider === "local") {
@@ -118,16 +156,66 @@ export default function Sidebar({ onFileSelect, settings, setSettings }: Sidebar
           <Cpu size={18} />
           ClawForge
         </h1>
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className={cn(
-            "p-1.5 rounded-md transition-colors",
-            showSettings ? "bg-accent text-white" : "hover:bg-white/10 text-text-secondary"
-          )}
-        >
-          <Settings size={16} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => { setShowWorkspaceInput(!showWorkspaceInput); setWorkspaceStatus(""); }}
+            className="p-1.5 rounded-md hover:bg-white/10 text-text-secondary transition-colors"
+            title="Open Folder"
+          >
+            <FolderOpen size={16} />
+          </button>
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className={cn(
+              "p-1.5 rounded-md transition-colors",
+              showSettings ? "bg-accent text-white" : "hover:bg-white/10 text-text-secondary"
+            )}
+          >
+            <Settings size={16} />
+          </button>
+        </div>
       </div>
+
+      {showWorkspaceInput && (
+        <div className="px-3 py-2 border-b border-border bg-black/20">
+          <p className="text-[10px] text-text-secondary mb-1 uppercase font-medium">Workspace Path</p>
+          <div className="flex gap-1">
+            <input
+              type="text"
+              value={workspaceInput}
+              onChange={(e) => setWorkspaceInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSetWorkspace()}
+              placeholder="/path/to/project"
+              className="flex-1 bg-bg border border-border rounded px-2 py-1 text-xs outline-none focus:border-accent font-mono"
+              autoFocus
+            />
+            <button
+              onClick={handleSetWorkspace}
+              className="p-1.5 bg-accent/10 hover:bg-accent/20 text-accent rounded transition-colors"
+              title="Set Workspace"
+            >
+              <Check size={14} />
+            </button>
+            <button
+              onClick={() => { setShowWorkspaceInput(false); setWorkspaceInput(""); setWorkspaceStatus(""); }}
+              className="p-1.5 hover:bg-white/10 text-text-secondary rounded transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          {workspaceStatus && (
+            <p className="text-[10px] mt-1 text-red-400">{workspaceStatus}</p>
+          )}
+        </div>
+      )}
+
+      {workspaceRoot && !showWorkspaceInput && (
+        <div className="px-3 py-1.5 border-b border-border bg-black/10">
+          <p className="text-[10px] text-text-secondary truncate font-mono" title={workspaceRoot}>
+            <span className="text-accent mr-1">⌂</span>{workspaceRoot}
+          </p>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
         {showSettings ? (
